@@ -1,0 +1,15 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+# Nothing is compiled at package build time. The module ships as source and
+# DKMS builds it against whichever kernel is running, which is the point of
+# shipping it this way. Without these overrides dh would find the module's own
+# Makefile at the source root and try to build against the build host's kernel.
+override_dh_auto_build:
+override_dh_auto_test:
+override_dh_auto_clean:
+# dh_auto_install would otherwise run this Makefile's own "install" target,
+# which does modules_install and depmod against the *build host's* kernel.
+override_dh_auto_install:

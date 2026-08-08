@@ -1,0 +1,6 @@
+nuc-ec-hwmon (1.0.0) noble; urgency=medium
+
+  * Initial packaging as its own source package, split out of the former
+    combined htpc-nuc-host tree.
+
+ -- Cam Cope <maccam94@gmail.com>  Fri, 07 Aug 2026 20:00:00 -0700

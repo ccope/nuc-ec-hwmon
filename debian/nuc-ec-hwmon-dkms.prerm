@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+
+NAME=nuc-ec-hwmon
+VERSION=$(ls -d /usr/src/$NAME-*/ 2>/dev/null | head -n1 | sed -e 's:/*$::' -e "s/.*$NAME-//")
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        if [ -n "$VERSION" ] && dkms status -m "$NAME" -v "$VERSION" 2>/dev/null | grep -q .; then
+            dkms remove -m "$NAME" -v "$VERSION" --all >/dev/null || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

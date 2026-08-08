@@ -1,0 +1,27 @@
+#!/bin/sh
+set -e
+
+NAME=nuc-ec-hwmon
+# Derived from the shipped source directory so the version lives in exactly one
+# place: debian/install.
+VERSION=$(ls -d /usr/src/$NAME-*/ 2>/dev/null | head -n1 | sed -e 's:/*$::' -e "s/.*$NAME-//")
+
+case "$1" in
+    configure)
+        if [ -n "$VERSION" ] && [ -d "/usr/src/$NAME-$VERSION" ]; then
+            dkms add -m "$NAME" -v "$VERSION" >/dev/null 2>&1 || true
+            if dkms build -m "$NAME" -v "$VERSION" >/dev/null; then
+                dkms install -m "$NAME" -v "$VERSION" --force >/dev/null
+                # Harmless where there is nothing to bind to: the driver
+                # refuses unless the board layout and EC signature both check.
+                modprobe nuc_ec_hwmon 2>/dev/null || true
+            else
+                echo "$NAME: DKMS build failed. Kernel headers for $(uname -r) installed?" >&2
+            fi
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0
