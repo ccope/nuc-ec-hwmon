@@ -208,7 +208,13 @@ struct nuc_ec {
 	bool have_temps;
 	u8 fan_type[NUC_EC_FAN_COUNT];	/* settled at probe, for is_visible */
 
-	struct mutex lock;
+	/*
+	 * The sample cache. An earlier version of this driver carried a mutex
+	 * around bare register reads, where it protected nothing and implied an
+	 * atomicity it could not deliver; that one was removed. This one guards
+	 * real shared state.
+	 */
+	struct mutex lock;		/* guards the four fields below */
 	unsigned long last_update;
 	bool valid;
 	u8 fan_block[NUC_EC_FAN_BLOCK_LEN];
@@ -763,4 +769,4 @@ module_exit(nuc_ec_exit);
 MODULE_AUTHOR("Cam Cope");
 MODULE_DESCRIPTION("hwmon driver for the Intel NUC embedded controller");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("0.6");
+MODULE_VERSION("1.0");
