@@ -13,11 +13,13 @@ holds only `acpitz`, `coretemp`, `nvme`, `iwlwifi` and two USB-C PSY chips, the
 three ACPI fans are ACPI 1.0 on/off devices with no `_FST`, and the Super I/O
 window is relocated to `0x164E` where no in-tree driver probes.
 
-It reads through `ec_read()`, the kernel's own ACPI EC path, so there is no
+On the original NUC11PA board it reads through `ec_read()`, the kernel's own
+ACPI EC path, so there is no
 `ioremap`, no `/dev/mem` and no physical address anywhere in it, and the ACPI EC
 driver serialises against AML's own EC traffic. It binds to the ACPI device
 `INTC1036` (`\_SB.NSSS`) — the natural attach point, and what Intel's own
-Windows driver binds to.
+Windows driver binds to. The NUC11TNBi3 path instead reads firmware-defined
+ACPI memory fields and uses a separate DMI-gated platform device; see below.
 
 ## Building and installing
 
@@ -52,15 +54,16 @@ dkms status nuc-ec-hwmon
 dmesg | grep nuc_ec_hwmon      # says which layout it chose
 ```
 
-Expect a `nuc_ec` chip with `CPU fan` in RPM and five temperature channels. Fan
-channels are hidden for slots reporting type 0 (not connected), so a one-fan
-machine shows one fan.
+Expect a `nuc_ec` chip with `CPU fan` in RPM. The original NUC11PABi7 board also
+exposes five temperature channels; NUC11TNBi3 is fan-only. Fan channels are
+hidden for slots reporting type 0 (not connected), so a one-fan machine shows
+one fan.
 
-Temperatures appear **only** on a board listed in the driver's DMI table,
-because unlike the fan block they were never corroborated against vendor code —
-and even there only `temp1` is confidently identified. The other four move with
-temperature but lag, so they are labelled by their EC address rather than given
-invented names. Do not read more into them than that.
+Temperatures appear **only** for the original measured NUC11PABi7 DMI entry,
+not the separate TN whitelist. Unlike the fan block they were never corroborated
+against vendor code, and even there only `temp1` is confidently identified. The
+other four move with temperature but lag, so they are labelled by their EC
+address rather than given invented names. Do not read more into them than that.
 
 ## Related documents
 
@@ -69,6 +72,65 @@ invented names. Do not read more into them than that.
 - [`FAN_PROFILES.md`](FAN_PROFILES.md) — how fan *mode* selection would work via
   `platform_profile`, and why per-fan pwm control is deliberately out of scope.
   Nothing there is implemented.
+
+## NUC11TNBi3: fan-only ACPI Field support
+
+This board's firmware has no `INTC1036` device. Its legacy `H_EC` backend is a
+stub, and the `ec_read()` path did not return the required `NUC_EC` signature.
+The telemetry is instead declared as ordinary 8-bit ACPI RegionFields under
+`\_SB`, backed by the firmware's `H2RA` SystemMemory OperationRegion:
+
+| Fields | Meaning |
+|---|---|
+| `R400`–`R405` | `NUC_EC` signature |
+| `R41C` | first fan's type (`1` = CPU fan) |
+| `R41D`, `R41E` | first fan's RPM, high byte then low byte |
+| `R41C`–`R42D` | six layout-22 fan records |
+
+The driver reads these existing fields through ACPICA. It does not create a
+new OperationRegion, perform direct physical-memory mappings or access raw EC
+ports. The reader rejects addresses outside the signature/fan ranges and checks
+each object's **RegionField** type before evaluation, so a Method that returns
+an integer is not accepted as a sensor field. Read failures never become a
+fabricated zero; genuine zero bytes remain valid data.
+
+Support is deliberately restricted to **Intel Corporation / NUC11TNBi3 /
+TNTGL357.0080 BIOS**. On that match the driver selects layout `22`, keeps all EC
+temperature channels disabled, and creates its own platform device if
+`INTC1036` is absent. It never unbinds the real `PNP0C09` device from `acpi-ec`.
+`layout=21` and `layout=bc` are rejected on this backend; the existing layout
+selection, EC transport and temperature behavior on the original PA board are
+unchanged. No support for other TN variants or BIOS versions is claimed.
+
+Hardware evidence came from an Intel NUC11TNHi3 / board NUC11TNBi3, BIOS
+`TNTGL357.0080.2026.0514.1751`, running Fedora 43 kernel
+`7.2.10-100.fc43.x86_64`. A temporary prototype of this ACPI Field transport
+reported **1969 RPM**, and Telegraf 1.40.2 `inputs.sensors` independently emitted
+`fan_input=1969` in output-disabled test mode. The prototype exposed one CPU fan
+and no EC temperature channels. It was unloaded afterward; real-EC ownership,
+fan BIOS settings, package inventory and container runtimes were unchanged.
+
+That hardware proof predates the runtime RegionField-type guard added here.
+Do not treat it as a hardware smoke test of every final PR revision. Long-run
+sampling, independent tachometer calibration, other TN boards and other BIOS
+versions remain unverified; the original separate-byte sampling behavior is
+unchanged by this support patch.
+
+## Reader tests
+
+```bash
+make test
+```
+
+Run this from the source checkout. It needs a host C compiler (`HOSTCC`, default
+`cc`) and Python 3. Tests compile
+the production ACPI reader with fake kernel/firmware boundary functions and
+exercise valid paths, all rejected byte addresses, wrong object types, missing
+fields, failed reads and byte-range checks. They do not load a module, invoke
+firmware or access hardware. Backend selection, layout rejection, temperature
+suppression and device registration/cleanup are reviewed statically, not
+exercised by this reader-only suite. A real module build against matching
+kernel-devel and a separately authorized hardware smoke test are still necessary.
 
 ---
 
@@ -123,7 +185,8 @@ else is flat. Those five remain empirical — only `temp1` is confidently
 identified, and the rest are labelled by their EC address rather than given
 invented names.
 
-`host/nuc-ec-hwmon/` turns this into an ordinary hwmon device. It reads through
+The original NUC11PA implementation turns this into an ordinary hwmon device.
+It reads through
 `ec_read()`, the kernel's own ACPI EC path, so there is no `ioremap`, no
 `/dev/mem` and no physical address anywhere in it, and the ACPI EC driver
 serialises against AML's own EC traffic for us. `sensors` shows it, and
@@ -216,4 +279,3 @@ Installing it needs root — see [`host/README.md`](host/README.md).
 kubectl -n vm port-forward ds/node-exporter 9100:9100 &
 curl -s localhost:9100/metrics | grep '^node_hwmon_fan'
 ```
-

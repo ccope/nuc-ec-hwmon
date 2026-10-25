@@ -1,4 +1,5 @@
 Makefile            usr/src/nuc-ec-hwmon-1.0/
 dkms.conf           usr/src/nuc-ec-hwmon-1.0/
 nuc_ec_hwmon.c      usr/src/nuc-ec-hwmon-1.0/
+nuc_ec_acpi.h       usr/src/nuc-ec-hwmon-1.0/
 usr/lib/modules-load.d/nuc-ec-hwmon.conf
