@@ -16,9 +16,10 @@ Description: hwmon driver for the Intel NUC embedded controller (DKMS)
  exposes no fan through any standard interface: there is no Super I/O at the
  usual ports, and the ACPI fans are on/off devices carrying no speed.
  .
- The driver reads through the kernel's own ACPI EC path, never writes to the
- EC, and refuses to bind unless both a known board layout and the EC's
- "NUC_EC" signature check out.
+ The driver reads through the kernel's ACPI EC path or, on the supported
+ NUC11TNBi3 firmware, existing ACPI memory fields. It never writes to the EC
+ and refuses to bind unless both a known board layout and the EC's "NUC_EC"
+ signature check out. TN support exposes fans only, not EC temperatures.
  .
  DKMS rebuilds the module on every kernel upgrade; without that the sensors
  would silently vanish after the next reboot.

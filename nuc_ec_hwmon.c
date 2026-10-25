@@ -10,9 +10,17 @@
  *
  * ACCESS METHOD
  *
- * ec_read(), i.e. the standard ACPI EC protocol over the PNP0C09 device the
- * kernel already owns. No ioremap, no /dev/mem, no physical address, and the
- * ACPI EC driver serialises against AML's own EC traffic for us.
+ * On the original NUC11PA board, ec_read() uses the standard ACPI EC protocol
+ * over the PNP0C09 device the kernel already owns. No ioremap, no /dev/mem,
+ * no physical address, and the ACPI EC driver serialises against AML's own
+ * EC traffic for us.
+ *
+ * NUC11TNBi3 firmware instead declares the telemetry as SystemMemory fields
+ * \_SB.R400..R4FF. Its legacy H_EC methods are stubs, and ec_read() does not
+ * return the NUC_EC signature. The TN path reads only validated RegionField
+ * objects through ACPICA's existing address-space handler. It has its own
+ * DMI-gated platform device and never takes ownership from acpi-ec. No direct
+ * mapping, raw port access or settings writes are performed by this driver.
  *
  * A memory-mapped alias of the same bytes exists (the DSDT declares it as
  * OperationRegion FNEC at 0xFE410400 and exposes it as the _CRS of ACPI device
@@ -106,6 +114,8 @@
 #include <linux/string.h>
 #include <linux/wmi.h>
 
+#include "nuc_ec_acpi.h"
+
 #define DRVNAME			"nuc_ec_hwmon"
 
 #define NUC_EC_SIG		"NUC_EC"
@@ -165,6 +175,16 @@ static bool wmi_probe;
 module_param(wmi_probe, bool, 0444);
 MODULE_PARM_DESC(wmi_probe,
 		 "Fall back to Intel's WMI PlatformCapabilityReport to pick a layout (untested, off by default)");
+
+static bool nuc_ec_tn_acpi_fields;
+
+static int nuc_ec_sensor_read(u8 addr, u8 *val)
+{
+	if (nuc_ec_tn_acpi_fields)
+		return nuc_ec_tn_read_byte(addr, val);
+
+	return ec_read(addr, val);
+}
 
 /* CISD_WMI, from the firmware's binary MOF - see the header comment. */
 #define NUC_EC_WMI_GUID		"8C5DA44C-CDC3-46B3-8619-4E26D34390B7"
@@ -241,7 +261,7 @@ static int nuc_ec_block_byte(const struct nuc_ec_layout *l, int idx, u8 *val)
 
 	for (i = 0; i < ARRAY_SIZE(l->seg); i++) {
 		if (idx < l->seg[i].len)
-			return ec_read(l->seg[i].addr + idx, val);
+			return nuc_ec_sensor_read(l->seg[i].addr + idx, val);
 		idx -= l->seg[i].len;
 	}
 
@@ -277,7 +297,7 @@ static int nuc_ec_refresh(struct nuc_ec *ec)
 	/* Skipped entirely on boards where the temperature bytes are unknown. */
 	if (ec->have_temps) {
 		for (i = 0; i < NUC_EC_TEMP_COUNT; i++) {
-			err = ec_read(nuc_ec_temp_addr[i], &ec->temp[i]);
+			err = nuc_ec_sensor_read(nuc_ec_temp_addr[i], &ec->temp[i]);
 			if (err)
 				goto stale;
 		}
@@ -645,7 +665,7 @@ static int nuc_ec_check_signature(struct device *dev)
 	u8 v;
 
 	for (i = 0; i < NUC_EC_SIGLEN; i++) {
-		err = ec_read(i, &v);
+		err = nuc_ec_sensor_read(i, &v);
 		if (err)
 			return dev_err_probe(dev, err, "EC read failed\n");
 		sig[i] = v;
@@ -671,7 +691,15 @@ static int nuc_ec_probe(struct platform_device *pdev)
 
 	mutex_init(&ec->lock);
 
-	ec->layout = nuc_ec_pick_layout(dev, &ec->have_temps);
+	if (nuc_ec_tn_acpi_fields) {
+		if (layout && strcmp(layout, "auto") && strcmp(layout, "22"))
+			return dev_err_probe(dev, -EINVAL,
+					     "TN ACPI fields require layout 22\n");
+		ec->layout = &nuc_ec_layout_22;
+		ec->have_temps = false;
+	} else {
+		ec->layout = nuc_ec_pick_layout(dev, &ec->have_temps);
+	}
 	if (!ec->layout)
 		return dev_err_probe(dev, -ENODEV,
 				     "no known EC layout for this board; try layout=21, 22 or bc\n");
@@ -724,11 +752,32 @@ static struct platform_driver nuc_ec_driver = {
 	.probe = nuc_ec_probe,
 };
 
+/*
+ * This board lacks INTC1036. Keep its match separate from nuc_ec_dmi_table:
+ * that table also enables temperature channels not validated on TN boards.
+ * The synthetic device must not replace the existing PNP0C09/acpi-ec owner.
+ */
+static const struct dmi_system_id nuc_ec_tn_dmi_table[] = {
+	{
+		.ident = "Intel NUC11TNBi3 (BIOS 0080)",
+		.matches = {
+			DMI_EXACT_MATCH(DMI_BOARD_VENDOR, "Intel Corporation"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "NUC11TNBi3"),
+			DMI_MATCH(DMI_BIOS_VERSION, "TNTGL357.0080."),
+		},
+	},
+	{ }
+};
+
+static struct platform_device *nuc_ec_tn_device;
+
 static bool nuc_ec_wmi_registered;
 
 static int __init nuc_ec_init(void)
 {
 	int err;
+
+	nuc_ec_tn_acpi_fields = dmi_check_system(nuc_ec_tn_dmi_table);
 
 	/*
 	 * Register the WMI driver first when it is wanted: driver registration
@@ -747,6 +796,16 @@ static int __init nuc_ec_init(void)
 	}
 
 	err = platform_driver_register(&nuc_ec_driver);
+	if (!err && nuc_ec_tn_acpi_fields &&
+	    !acpi_dev_present("INTC1036", NULL, -1)) {
+		nuc_ec_tn_device = platform_device_register_simple(DRVNAME,
+						PLATFORM_DEVID_NONE, NULL, 0);
+		if (IS_ERR(nuc_ec_tn_device)) {
+			err = PTR_ERR(nuc_ec_tn_device);
+			nuc_ec_tn_device = NULL;
+			platform_driver_unregister(&nuc_ec_driver);
+		}
+	}
 	if (err && nuc_ec_wmi_registered) {
 		wmi_driver_unregister(&nuc_ec_wmi_driver);
 		nuc_ec_wmi_registered = false;
@@ -757,6 +816,9 @@ static int __init nuc_ec_init(void)
 
 static void __exit nuc_ec_exit(void)
 {
+	if (nuc_ec_tn_device)
+		platform_device_unregister(nuc_ec_tn_device);
+
 	platform_driver_unregister(&nuc_ec_driver);
 
 	if (nuc_ec_wmi_registered)

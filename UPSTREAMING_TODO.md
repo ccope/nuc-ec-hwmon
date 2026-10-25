@@ -59,9 +59,11 @@ for platform-x86. Worth asking on the list before writing a patch.
 ### 6. `ec_read()`
 
 It targets the boot EC global and does not honour any ASL mutex the firmware
-may expect around EC access. New callers attract scrutiny. There is no better
-option — the alternatives (an operation region, a vendor WMI method for fan
-speed) do not exist on this platform — but the answer needs to be ready.
+may expect around EC access. New callers attract scrutiny. For the original
+NUC11PA platform, the answer needs to be ready. The newly supported NUC11TNBi3
+uses firmware-defined ACPI RegionFields instead: its legacy EC backend is a
+stub. That path must not be generalized to other boards without checking their
+firmware namespace and validating hardware.
 
 ### 7. Claiming ACPI HID `INTC1036`
 

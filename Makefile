@@ -14,4 +14,7 @@ install: all
 	$(MAKE) -C $(KDIR) M=$(PWD) modules_install
 	depmod -a $(KVER)
 
-.PHONY: all clean install
+test:
+	python3 tests/run.py
+
+.PHONY: all clean install test
